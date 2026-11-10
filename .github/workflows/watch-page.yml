@@ -1,0 +1,105 @@
+name: Watch oil price
+
+on:
+  schedule:
+    - cron: "10 * * * *"   # hourly; GitHub may delay scheduled runs
+  workflow_dispatch:
+
+permissions:
+  contents: write           # needed to commit the snapshot back
+
+env:
+  WATCH_URL: "https://bangorfuels.com/order-oil/"
+  PRODUCT_ID: "38"          # add-to-cart=38 is the 500L product (£507.20)
+  PRODUCT_LABEL: "500L"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests beautifulsoup4
+
+      - name: Fetch price
+        run: |
+          python - <<'PY'
+          import os, re, requests
+          from bs4 import BeautifulSoup
+
+          r = requests.get(
+              os.environ["WATCH_URL"],
+              headers={"User-Agent": "Mozilla/5.0 (price-watcher)"},
+              timeout=30,
+          )
+          r.raise_for_status()
+          soup = BeautifulSoup(r.text, "html.parser")
+
+          pid = os.environ["PRODUCT_ID"]
+          link = soup.select_one(f'a[href*="add-to-cart={pid}"]')
+          if link is None:
+              raise SystemExit(f"No add-to-cart={pid} link found; page changed?")
+
+          # Walk up from the button to the nearest ancestor that contains a price.
+          price_re = re.compile(r"£\s?\d[\d,]*\.\d{2}")
+          node = link
+          for _ in range(8):
+              node = node.parent
+              if node is None:
+                  break
+              prices = set(price_re.findall(node.get_text(" ", strip=True)))
+              if prices:
+                  if len(prices) > 1:
+                      raise SystemExit(f"Ambiguous: multiple prices in container: {prices}")
+                  open("snapshot.new.txt", "w").write(prices.pop() + "\n")
+                  break
+          else:
+              raise SystemExit("No price found near the add-to-cart link")
+          PY
+
+      - name: Compare with last snapshot
+        id: diff
+        run: |
+          new=$(cat snapshot.new.txt)
+          if [ ! -f snapshot.txt ]; then
+            echo "First run: baseline is $new"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            old=$(cat snapshot.txt)
+            if [ "$old" != "$new" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "old=$old" >> "$GITHUB_OUTPUT"
+              echo "new=$new" >> "$GITHUB_OUTPUT"
+              printf '%s price changed: %s -> %s\n\n%s\n' \
+                "$PRODUCT_LABEL" "$old" "$new" "$WATCH_URL" > message.txt
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          mv snapshot.new.txt snapshot.txt
+
+      - name: Send email
+        if: steps.diff.outputs.changed == 'true'
+        uses: dawidd6/action-send-mail@v6
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          to: ${{ secrets.MAIL_TO }}
+          from: Price Watcher <${{ secrets.SMTP_USER }}>
+          subject: "Oil ${{ env.PRODUCT_LABEL }}: ${{ steps.diff.outputs.old }} -> ${{ steps.diff.outputs.new }}"
+          body: file://message.txt
+
+      - name: Commit snapshot
+        run: |
+          git config user.name "price-watcher"
+          git config user.email "price-watcher@users.noreply.github.com"
+          git add snapshot.txt
+          git diff --cached --quiet || { git commit -m "Update snapshot" && git push; }
