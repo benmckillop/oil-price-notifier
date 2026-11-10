@@ -2,7 +2,7 @@ name: Watch oil price
 
 on:
   schedule:
-    - cron: "10 * * * *"   # hourly; GitHub may delay scheduled runs
+    - cron: "10,40 7-18 * * *"   # hourly; GitHub may delay scheduled runs
   workflow_dispatch:
 
 permissions:
