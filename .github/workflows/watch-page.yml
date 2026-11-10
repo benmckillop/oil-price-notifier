@@ -3,7 +3,7 @@ name: Watch oil price
 on:
   schedule:
     - cron: "35 * * * *"   # Runs at 10 minutes past the hour, between 07:00 and 18:59
-workflow_dispatch:
+  workflow_dispatch:
 
 permissions:
   contents: write           # needed to commit the snapshot back
