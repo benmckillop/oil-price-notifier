@@ -2,7 +2,7 @@ name: Watch oil price
 
 on:
   schedule:
-    - cron: "10 7-18 * * *"   # Runs at 10 minutes past the hour, between 07:00 and 18:59
+    - cron: "23 7-18 * * *"   # Runs at 10 minutes past the hour, between 07:00 and 18:59
 
 permissions:
   contents: write           # needed to commit the snapshot back
