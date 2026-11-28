@@ -10,7 +10,7 @@ permissions:
 
 env:
   WATCH_URL: "https://bangorfuels.com/order-oil/"
-  PRODUCT_ID: "38"          # add-to-cart=38 is the 500L product (£507.20)
+  PRODUCT_ID: "38"          # add-to-cart=38 is the 500L product
   PRODUCT_LABEL: "500L"
 
 jobs:
@@ -29,37 +29,61 @@ jobs:
       - name: Fetch price
         run: |
           python - <<'PY'
-          import os, re, requests
+          import os, re, sys, requests
           from bs4 import BeautifulSoup
+
+          PRICE = re.compile(r"£\s?\d[\d,]*\.\d{2}")
+          pid, label = os.environ["PRODUCT_ID"], os.environ["PRODUCT_LABEL"]
+
+          def by_link(soup):
+              link = soup.select_one(f'a[href*="add-to-cart={pid}"], [data-product_id="{pid}"]')
+              node = link
+              for _ in range(8):
+                  if node is None:
+                      return None
+                  node = node.parent
+                  if node is None:
+                      return None
+                  prices = set(PRICE.findall(node.get_text(" ", strip=True)))
+                  if prices:
+                      return prices.pop() if len(prices) == 1 else None
+              return None
+
+          def by_heading(soup):
+              lines = [l.strip() for l in soup.get_text("\n", strip=True).splitlines() if l.strip()]
+              for i, line in enumerate(lines):
+                  if line.upper() == label.upper():
+                      for nxt in lines[i + 1 : i + 4]:
+                          if re.fullmatch(r"\d[\d,]*L", nxt, re.I):
+                              break
+                          m = PRICE.search(nxt)
+                          if m:
+                              return m.group(0)
+              return None
 
           r = requests.get(
               os.environ["WATCH_URL"],
               headers={"User-Agent": "Mozilla/5.0 (price-watcher)"},
               timeout=30,
           )
+          print(f"status={r.status_code} final_url={r.url} bytes={len(r.text)}")
           r.raise_for_status()
+
           soup = BeautifulSoup(r.text, "html.parser")
+          for t in soup(["script", "style", "noscript"]):
+              t.decompose()
 
-          pid = os.environ["PRODUCT_ID"]
-          link = soup.select_one(f'a[href*="add-to-cart={pid}"]')
-          if link is None:
-              raise SystemExit(f"No add-to-cart={pid} link found; page changed?")
+          price = by_link(soup) or by_heading(soup)
+          if not price:
+              # Diagnostics: what did the runner actually receive?
+              print("title:", soup.title.string if soup.title else None)
+              print("add-to-cart occurrences:", r.text.count("add-to-cart"))
+              print("first 500 chars of body text:")
+              print(soup.get_text(" ", strip=True)[:500])
+              sys.exit("Price not found by link or heading; see diagnostics above")
 
-          # Walk up from the button to the nearest ancestor that contains a price.
-          price_re = re.compile(r"£\s?\d[\d,]*\.\d{2}")
-          node = link
-          for _ in range(8):
-              node = node.parent
-              if node is None:
-                  break
-              prices = set(price_re.findall(node.get_text(" ", strip=True)))
-              if prices:
-                  if len(prices) > 1:
-                      raise SystemExit(f"Ambiguous: multiple prices in container: {prices}")
-                  open("snapshot.new.txt", "w").write(prices.pop() + "\n")
-                  break
-          else:
-              raise SystemExit("No price found near the add-to-cart link")
+          print("price:", price)
+          open("snapshot.new.txt", "w").write(price + "\n")
           PY
 
       - name: Compare with last snapshot
